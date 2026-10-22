@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Excel to SQL Generator</title>
+  <!-- SheetJS parses Excel files locally in your browser. Pin the library version. -->
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <style>
+    :root { color-scheme: light; --bg:#f5f7fb; --card:#fff; --ink:#172033; --muted:#64748b; --line:#dbe2ea; --blue:#2457d6; --blue2:#eaf0ff; --red:#b42318; --green:#067647; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+    main { max-width:1120px; margin:32px auto; padding:0 18px 48px; }
+    h1 { margin:0 0 6px; font-size:clamp(25px,4vw,36px); letter-spacing:-.03em; }
+    h2 { margin:0 0 12px; font-size:19px; }
+    p { margin:5px 0 12px; }
+    .muted { color:var(--muted); }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; margin-top:16px; box-shadow:0 2px 8px #17203308; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+    .field { display:flex; flex-direction:column; gap:6px; min-width:0; }
+    label { font-weight:650; }
+    input[type=text], select, input[type=number] { width:100%; min-height:42px; border:1px solid #c7d0dc; border-radius:8px; padding:9px 11px; font:inherit; background:white; color:var(--ink); }
+    input[type=file] { display:block; width:100%; padding:12px; background:#fff; border:1px dashed #9aa8bb; border-radius:10px; }
+    button { border:0; border-radius:8px; padding:10px 14px; min-height:40px; background:var(--blue); color:#fff; font:inherit; font-weight:700; cursor:pointer; }
+    button.secondary { background:var(--blue2); color:#1e40af; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .actions { display:flex; gap:9px; flex-wrap:wrap; align-items:center; margin-top:12px; }
+    .notice { padding:11px 13px; border-radius:9px; background:#eff6ff; color:#1e40af; margin-top:12px; }
+    .notice.error { background:#fef3f2; color:var(--red); }
+    .notice.success { background:#ecfdf3; color:var(--green); }
+    .hidden { display:none !important; }
+    .columns { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+    .column-box { border:1px solid var(--line); border-radius:10px; padding:12px; min-width:0; }
+    .column-box h3 { margin:0 0 8px; font-size:15px; }
+    .check-list { max-height:250px; overflow:auto; }
+    .check-row { display:flex; align-items:flex-start; gap:8px; padding:6px 2px; overflow-wrap:anywhere; font-weight:400; }
+    .check-row input { margin-top:5px; flex:0 0 auto; }
+    .check-row span { min-width:0; }
+    .small { font-size:13px; }
+    .preview-wrap { overflow:auto; border:1px solid var(--line); border-radius:9px; margin-top:10px; }
+    table { border-collapse:collapse; width:100%; min-width:500px; background:white; }
+    th, td { padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; max-width:260px; overflow:hidden; text-overflow:ellipsis; }
+    th { background:#f8fafc; }
+    textarea { display:block; width:100%; min-height:270px; resize:vertical; border:1px solid #c7d0dc; border-radius:9px; padding:12px; font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace; white-space:pre; }
+    .status { font-size:13px; color:var(--muted); }
+    .warning { border-left:4px solid #d97706; padding:10px 12px; background:#fffbeb; color:#92400e; border-radius:4px 8px 8px 4px; }
+    footer { margin-top:18px; font-size:13px; color:var(--muted); }
+    @media (max-width:760px) { .grid,.columns { grid-template-columns:1fr; } .card { padding:15px; } main { margin-top:18px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Excel to SQL Generator</h1>
+    <p class="muted">Choose spreadsheet columns and generate SELECT and UPDATE statements locally in your browser.</p>
+  </header>
+
+  <section class="card">
+    <h2>1. Upload spreadsheet</h2>
+    <p class="muted small">Supported: .xlsx, .xls, .csv. The first row of the selected sheet must contain unique column headers.</p>
+    <div class="field">
+      <label for="fileInput">Excel or CSV file</label>
+      <input id="fileInput" type="file" accept=".xlsx,.xls,.xlsm,.xlsb,.csv">
+    </div>
+    <div id="sheetRow" class="field hidden" style="margin-top:12px">
+      <label for="sheetSelect">Worksheet</label>
+      <select id="sheetSelect"></select>
+    </div>
+    <div id="fileStatus" class="notice" role="status">Choose a file to begin.</div>
+    <div id="previewSection" class="hidden">
+      <p id="dataSummary" class="muted small"></p>
+      <div class="preview-wrap"><table id="dataPreview"></table></div>
+    </div>
+  </section>
+
+  <section id="configSection" class="card hidden">
+    <h2>2. Configure SQL</h2>
+    <div class="grid">
+      <div class="field">
+        <label for="tableName">Target table name</label>
+        <input id="tableName" type="text" value="YourTable" placeholder="e.g. Employees" autocomplete="off">
+        <span class="muted small">Use a table name you are authorized to reference.</span>
+      </div>
+      <div class="field">
+        <label for="dialect">SQL dialect</label>
+        <select id="dialect">
+          <option value="postgres">PostgreSQL</option>
+          <option value="mysql">MySQL</option>
+          <option value="sqlserver">SQL Server</option>
+          <option value="sqlite">SQLite</option>
+          <option value="oracle">Oracle</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="statementType">Statements to generate</label>
+        <select id="statementType">
+          <option value="both">SELECT and UPDATE</option>
+          <option value="select">SELECT only</option>
+          <option value="update">UPDATE only</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="maxRows">Maximum spreadsheet rows to process</label>
+        <input id="maxRows" type="number" min="1" max="1000000" value="10000">
+        <span class="muted small">Safety limit for generated output; increase only if your browser can handle it.</span>
+      </div>
+    </div>
+
+    <div class="columns" style="margin-top:18px">
+      <div class="column-box">
+        <h3>SELECT columns</h3>
+        <p class="muted small">Select the database columns to return. Names come from the Excel header row.</p>
+        <div id="selectColumns" class="check-list"></div>
+        <div class="actions"><button type="button" class="secondary small" data-action="all-select">Select all</button><button type="button" class="secondary small" data-action="none-select">Clear</button></div>
+      </div>
+      <div class="column-box">
+        <h3>WHERE columns</h3>
+        <p class="muted small">Select columns here. For every row, its own Excel cell value becomes the WHERE value.</p>
+        <div id="whereColumns" class="check-list"></div>
+        <div class="actions"><button type="button" class="secondary small" data-action="all-where">Select all</button><button type="button" class="secondary small" data-action="none-where">Clear</button></div>
+      </div>
+      <div class="column-box">
+        <h3>UPDATE columns</h3>
+        <p class="muted small">Select columns here. For every row, its own Excel cell value becomes the UPDATE value.</p>
+        <div id="updateColumns" class="check-list"></div>
+        <div class="actions"><button type="button" class="secondary small" data-action="all-update">Select all</button><button type="button" class="secondary small" data-action="none-update">Clear</button></div>
+      </div>
+    </div>
+    <div class="warning" style="margin-top:16px">
+      <strong>Important:</strong> UPDATE statements can modify data. This tool only generates text; it never connects to or executes queries against a database. Always review the table, WHERE columns, and generated SQL before running it.
+    </div>
+    <div class="actions">
+      <button id="generateBtn" type="button">Generate SQL</button>
+      <button id="clearBtn" type="button" class="secondary">Reset</button>
+      <span id="generationStatus" class="status"></span>
+    </div>
+  </section>
+
+  <section id="outputSection" class="card hidden">
+    <h2>3. Generated SQL</h2>
+    <p id="outputSummary" class="muted small"></p>
+    <div id="outputWarning" class="notice hidden"></div>
+    <textarea id="sqlOutput" spellcheck="false" readonly placeholder="Generated SQL will appear here."></textarea>
+    <div class="actions">
+      <button id="copyBtn" type="button">Copy SQL</button>
+      <button id="downloadBtn" type="button" class="secondary">Download .sql</button>
+    </div>
+    <p class="muted small">For large outputs, the preview is capped to keep the page responsive. Download SQL to get the complete output.</p>
+  </section>
+  <footer>Privacy note: spreadsheet contents are parsed in this browser tab and are not sent to a database or application server. SheetJS is loaded from its official CDN, so an internet connection is needed unless you download and host that library locally.</footer>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const PREVIEW_CHARS = 200000;
+  const PREVIEW_ROWS = 8;
+  let workbook = null;
+  let headers = [];
+  let rows = [];
+  let completeSql = "";
+  let currentFileName = "spreadsheet";
+  let detectedHeaderRowIndex = 0;
+
+  const state = {
+    select: new Set(),
+    where: new Set(),
+    update: new Set()
+  };
+
+  function showNotice(message, kind = "") {
+    const el = $("fileStatus");
+    el.textContent = message;
+    el.className = "notice" + (kind ? " " + kind : "");
+  }
+
+  function cleanHeader(value, index) {
+    const text = value == null ? "" : String(value).trim();
+    return text || `Column_${index + 1}`;
+  }
+
+  function uniqueHeaders(rawHeaders) {
+    const seen = new Map();
+    return rawHeaders.map((h, i) => {
+      const base = cleanHeader(h, i);
+      const count = (seen.get(base.toLowerCase()) || 0) + 1;
+      seen.set(base.toLowerCase(), count);
+      return count === 1 ? base : `${base}_${count}`;
+    });
+  }
+
+  function normalizeCell(value) {
+    // Preserve Excel calendar dates as displayed wall-clock values; avoid UTC shifts from toISOString().
+    if (value === undefined || value === null || value === "") return null;
+    if (value instanceof Date) {
+      if (Number.isNaN(value.getTime())) return null;
+      const pad = n => String(n).padStart(2, "0");
+      const date = `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+      const hasTime = value.getHours() !== 0 || value.getMinutes() !== 0 || value.getSeconds() !== 0;
+      return hasTime ? `${date} ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}` : date;
+    }
+    if (typeof value === "number" && !Number.isFinite(value)) return null;
+    return value;
+  }
+
+  function renderPreview() {
+    const table = $("dataPreview");
+    table.replaceChildren();
+    const thead = document.createElement("thead");
+    const tr = document.createElement("tr");
+    headers.forEach(h => {
+      const th = document.createElement("th");
+      th.textContent = h;
+      tr.appendChild(th);
+    });
+    thead.appendChild(tr);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    rows.slice(0, PREVIEW_ROWS).forEach(row => {
+      const tr = document.createElement("tr");
+      headers.forEach(h => {
+        const td = document.createElement("td");
+        const value = row[h];
+        td.textContent = value == null ? "" : String(value);
+        td.title = td.textContent;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    $("dataSummary").textContent = `${headers.length} columns · ${rows.length.toLocaleString()} data rows detected · previewing first ${Math.min(rows.length, PREVIEW_ROWS)} rows`;
+    $("previewSection").classList.remove("hidden");
+  }
+
+  function renderColumnLists() {
+    ["select", "where", "update"].forEach(kind => {
+      const container = $(`${kind}Columns`);
+      container.replaceChildren();
+      headers.forEach(header => {
+        const label = document.createElement("label");
+        label.className = "check-row";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = state[kind].has(header);
+        checkbox.addEventListener("change", () => {
+          checkbox.checked ? state[kind].add(header) : state[kind].delete(header);
+        });
+        const textWrap = document.createElement("span");
+        textWrap.style.display = "flex";
+        textWrap.style.flexDirection = "column";
+        textWrap.style.gap = "1px";
+        textWrap.style.minWidth = "0";
+
+        const name = document.createElement("strong");
+        name.style.fontWeight = "600";
+        name.textContent = header;
+
+        const example = document.createElement("small");
+        example.className = "muted";
+        const sampleValue = rows.length ? rows[0][header] : null;
+        const sampleText = sampleValue === null || sampleValue === undefined ? "blank" : String(sampleValue);
+        example.textContent = `Excel value example: ${sampleText}`;
+        example.title = "Example from the first data row. Generated SQL uses the value from each corresponding row.";
+        textWrap.append(name, example);
+        label.append(checkbox, textWrap);
+        container.appendChild(label);
+      });
+    });
+  }
+
+  function loadSheet(sheetName) {
+    if (!workbook || !sheetName) return;
+    try {
+      const worksheet = workbook.Sheets[sheetName];
+      // Keep blank rows so title rows and spacing before the real header are not collapsed.
+      const matrix = XLSX.utils.sheet_to_json(worksheet, {
+        header: 1,
+        defval: null,
+        raw: true,
+        blankrows: true
+      });
+
+      if (!matrix.length) throw new Error("The selected worksheet is empty.");
+
+      // Detect the most likely header row: most populated cells, then most text cells.
+      // This handles title rows, blank rows, merged headings, and leading blank columns.
+      let headerRowIndex = -1;
+      let bestCount = 0;
+      let bestTextCount = -1;
+      matrix.forEach((row, index) => {
+        if (!Array.isArray(row)) return;
+        const populated = row.filter(v => v !== null && v !== undefined && String(v).trim() !== "");
+        const textCount = populated.filter(v => typeof v === "string").length;
+        if (populated.length > bestCount ||
+            (populated.length === bestCount && textCount > bestTextCount)) {
+          bestCount = populated.length;
+          bestTextCount = textCount;
+          headerRowIndex = index;
+        }
+      });
+
+      if (headerRowIndex < 0 || bestCount < 2) {
+        throw new Error("Could not detect a header row. Make sure the worksheet has at least two column names.");
+      }
+
+      const rawHeaders = matrix[headerRowIndex] || [];
+      // Ignore blank header cells rather than inventing Column_2 / Column_3 names.
+      const sourceColumnIndexes = [];
+      const nonBlankRawHeaders = [];
+      rawHeaders.forEach((value, index) => {
+        if (value !== null && value !== undefined && String(value).trim() !== "") {
+          sourceColumnIndexes.push(index);
+          nonBlankRawHeaders.push(String(value).trim());
+        }
+      });
+      detectedHeaderRowIndex = headerRowIndex;
+      headers = uniqueHeaders(nonBlankRawHeaders);
+      if (!headers.length) throw new Error("No usable column headers were found.");
+
+      rows = [];
+      for (let r = headerRowIndex + 1; r < matrix.length; r++) {
+        const values = matrix[r] || [];
+        const obj = {};
+        let hasValue = false;
+        headers.forEach((header, c) => {
+          const value = normalizeCell(values[sourceColumnIndexes[c]]);
+          obj[header] = value;
+          if (value !== null) hasValue = true;
+        });
+        if (hasValue) rows.push(obj);
+      }
+
+      state.select = new Set(headers);
+      state.where = new Set();
+      state.update = new Set();
+      renderPreview();
+      renderColumnLists();
+      $("configSection").classList.remove("hidden");
+      $("outputSection").classList.add("hidden");
+      showNotice(`Loaded worksheet "${sheetName}". Detected headers on worksheet row ${headerRowIndex + 1}; ${headers.length} columns and ${rows.length} data rows found. Processing stays in this browser.`, "success");
+    } catch (error) {
+      showNotice(error.message || "Could not read the selected worksheet.", "error");
+      $("configSection").classList.add("hidden");
+      $("previewSection").classList.add("hidden");
+    }
+  }
+  $("fileInput").addEventListener("change", async (event) => {
+    const file = event.target.files && event.target.files[0];
+    workbook = null;
+    headers = [];
+    rows = [];
+    completeSql = "";
+    $("configSection").classList.add("hidden");
+    $("outputSection").classList.add("hidden");
+    $("previewSection").classList.add("hidden");
+    $("sheetRow").classList.add("hidden");
+    if (!file) return;
+
+    currentFileName = file.name.replace(/\.[^.]+$/, "") || "spreadsheet";
+    if (typeof XLSX === "undefined") {
+      showNotice("SheetJS did not load. Check your internet connection or host the SheetJS library locally.", "error");
+      return;
+    }
+
+    // Browser memory is required to parse XLSX; this size check is a conservative guard, not a guarantee.
+    const maxFileBytes = 150 * 1024 * 1024;
+    if (file.size > maxFileBytes) {
+      showNotice("This file is larger than the 150 MB browser-MVP limit. Use a smaller file or a streaming backend.", "error");
+      event.target.value = "";
+      return;
+    }
+
+    showNotice(`Reading ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)…`);
+    try {
+      const buffer = await file.arrayBuffer();
+      workbook = XLSX.read(buffer, { type: "array", cellDates: true, dense: true });
+      if (!workbook.SheetNames.length) throw new Error("No worksheets found in this file.");
+
+      const sheetSelect = $("sheetSelect");
+      sheetSelect.replaceChildren();
+      workbook.SheetNames.forEach(name => {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        sheetSelect.appendChild(option);
+      });
+      if (workbook.SheetNames.length > 1) $("sheetRow").classList.remove("hidden");
+      else $("sheetRow").classList.add("hidden");
+      loadSheet(workbook.SheetNames[0]);
+    } catch (error) {
+      workbook = null;
+      showNotice(`Unable to parse file: ${error.message || error}`, "error");
+    }
+  });
+
+  $("sheetSelect").addEventListener("change", () => loadSheet($("sheetSelect").value));
+
+  document.querySelectorAll("[data-action]").forEach(button => {
+    button.addEventListener("click", () => {
+      const [action, kind] = button.dataset.action.split("-");
+      if (action === "all") state[kind] = new Set(headers);
+      else state[kind].clear();
+      renderColumnLists();
+    });
+  });
+
+  function quoteIdentifier(identifier, dialect) {
+    const value = String(identifier);
+    if (value.includes("\0")) throw new Error("Column or table names cannot contain NUL characters.");
+    switch (dialect) {
+      case "mysql": return "`" + value.replace(/`/g, "``") + "`";
+      case "sqlserver": return "[" + value.replace(/]/g, "]]") + "]";
+      case "oracle":
+      case "postgres":
+      case "sqlite": return '"' + value.replace(/"/g, '""') + '"';
+      default: throw new Error("Unsupported SQL dialect.");
+    }
+  }
+
+  function sqlLiteral(value, dialect) {
+    if (value === null || value === undefined) return "NULL";
+    if (typeof value === "boolean") {
+      if (dialect === "sqlserver") return value ? "1" : "0";
+      return value ? "TRUE" : "FALSE";
+    }
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) throw new Error("Cannot serialize a non-finite number.");
+      return String(value);
+    }
+    // Standard SQL escaping: embedded single quotes are doubled.
+    const text = String(value).replace(/'/g, "''");
+    return (dialect === "sqlserver" ? "N" : "") + "'" + text + "'";
+  }
+
+  function whereSql(row, selectedWhere, dialect) {
+    if (!selectedWhere.length) {
+      throw new Error("Select at least one WHERE column. UPDATE statements without a WHERE clause are blocked.");
+    }
+    return selectedWhere.map(column => {
+      const name = quoteIdentifier(column, dialect);
+      const value = row[column];
+      return value === null || value === undefined
+        ? `${name} IS NULL`
+        : `${name} = ${sqlLiteral(value, dialect)}`;
+    }).join(" AND ");
+  }
+
+  function makeSelect(row, table, selectedSelect, selectedWhere, dialect) {
+    if (!selectedSelect.length) throw new Error("Select at least one SELECT column.");
+    const cols = selectedSelect.map(c => quoteIdentifier(c, dialect)).join(", ");
+    return `SELECT ${cols}\nFROM ${quoteIdentifier(table, dialect)}\nWHERE ${whereSql(row, selectedWhere, dialect)};`;
+  }
+
+  function makeUpdate(row, table, selectedUpdate, selectedWhere, dialect) {
+    if (!selectedUpdate.length) throw new Error("Select at least one UPDATE column.");
+    if (!selectedWhere.length) throw new Error("Select at least one WHERE column. UPDATE statements without a WHERE clause are blocked.");
+    const assignments = selectedUpdate.map(column => {
+      return `${quoteIdentifier(column, dialect)} = ${sqlLiteral(row[column], dialect)}`;
+    }).join(",\n    ");
+    return `UPDATE ${quoteIdentifier(table, dialect)}\nSET ${assignments}\nWHERE ${whereSql(row, selectedWhere, dialect)};`;
+  }
+
+  function validateTableName(value) {
+    const table = value.trim();
+    if (!table) throw new Error("Enter a target table name.");
+    if (table.includes("\0") || table.includes("\n") || table.includes("\r")) {
+      throw new Error("Table name cannot contain line breaks or NUL characters.");
+    }
+    return table;
+  }
+
+  $("generateBtn").addEventListener("click", () => {
+    try {
+      if (!rows.length) throw new Error("Upload a worksheet with at least one non-empty data row.");
+      const table = validateTableName($("tableName").value);
+      const dialect = $("dialect").value;
+      const type = $("statementType").value;
+      const selectedSelect = headers.filter(h => state.select.has(h));
+      const selectedWhere = headers.filter(h => state.where.has(h));
+      const selectedUpdate = headers.filter(h => state.update.has(h));
+      const maxRows = Number.parseInt($("maxRows").value, 10);
+
+      if (!Number.isInteger(maxRows) || maxRows < 1 || maxRows > 1000000) {
+        throw new Error("Maximum rows must be an integer between 1 and 1,000,000.");
+      }
+      if (type !== "update" && !selectedSelect.length) throw new Error("Select at least one SELECT column.");
+      if (type !== "select" && !selectedUpdate.length) throw new Error("Select at least one UPDATE column.");
+      if (type !== "select" && !selectedWhere.length) throw new Error("Select at least one WHERE column. UPDATE without WHERE is blocked.");
+      if (type === "select" && !selectedWhere.length) throw new Error("Select at least one WHERE column.");
+
+      const processRows = rows.slice(0, maxRows);
+      // Group statement types so every SELECT appears before any UPDATE.
+      const selectStatements = [];
+      const updateStatements = [];
+
+      processRows.forEach((row, index) => {
+        const excelRowNumber = index + detectedHeaderRowIndex + 2;
+        if (type === "both" || type === "select") {
+          selectStatements.push(
+            `-- Spreadsheet data row ${excelRowNumber}\n` +
+            makeSelect(row, table, selectedSelect, selectedWhere, dialect)
+          );
+        }
+        if (type === "both" || type === "update") {
+          updateStatements.push(
+            `-- Spreadsheet data row ${excelRowNumber}\n` +
+            makeUpdate(row, table, selectedUpdate, selectedWhere, dialect)
+          );
+        }
+      });
+
+      const sections = [];
+      if (selectStatements.length) {
+        sections.push("-- ==================== SELECT STATEMENTS ====================\n" + selectStatements.join("\n\n"));
+      }
+      if (updateStatements.length) {
+        sections.push("-- ==================== UPDATE STATEMENTS ====================\n" + updateStatements.join("\n\n"));
+      }
+      completeSql = sections.join("\n\n\n");
+      const preview = completeSql.length > PREVIEW_CHARS
+        ? completeSql.slice(0, PREVIEW_CHARS) + "\n\n-- Preview truncated. Download the .sql file for the complete output."
+        : completeSql;
+      $("sqlOutput").value = preview;
+      $("outputSummary").textContent = `${processRows.length.toLocaleString()} rows processed · ${chunks.length.toLocaleString()} row blocks · ${completeSql.length.toLocaleString()} characters generated`;
+      const warning = $("outputWarning");
+      if (rows.length > maxRows) {
+        warning.textContent = `Only the first ${maxRows.toLocaleString()} of ${rows.length.toLocaleString()} data rows were processed because of your configured row limit. Increase the limit and regenerate if appropriate.`;
+        warning.classList.remove("hidden");
+      } else if (completeSql.length > PREVIEW_CHARS) {
+        warning.textContent = "The on-screen preview is truncated to keep the page responsive. The download contains the complete SQL.";
+        warning.classList.remove("hidden");
+      } else {
+        warning.classList.add("hidden");
+      }
+      $("outputSection").classList.remove("hidden");
+      $("generationStatus").textContent = "SQL generated. Review it before use.";
+      $("outputSection").scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (error) {
+      $("generationStatus").textContent = error.message || "Could not generate SQL.";
+      $("outputSection").classList.add("hidden");
+    }
+  });
+
+  $("copyBtn").addEventListener("click", async () => {
+    if (!completeSql) return;
+    try {
+      await navigator.clipboard.writeText(completeSql);
+      $("copyBtn").textContent = "Copied!";
+      setTimeout(() => $("copyBtn").textContent = "Copy SQL", 1600);
+    } catch (_) {
+      $("sqlOutput").focus();
+      $("sqlOutput").select();
+      $("generationStatus").textContent = "Clipboard access was blocked. Select and copy the preview, or download the full SQL file.";
+    }
+  });
+
+  $("downloadBtn").addEventListener("click", () => {
+    if (!completeSql) return;
+    const blob = new Blob([completeSql], { type: "text/sql;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${currentFileName}_generated.sql`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  $("clearBtn").addEventListener("click", () => {
+    workbook = null;
+    headers = [];
+    rows = [];
+    completeSql = "";
+    state.select.clear();
+    state.where.clear();
+    state.update.clear();
+    $("fileInput").value = "";
+    $("configSection").classList.add("hidden");
+    $("outputSection").classList.add("hidden");
+    $("previewSection").classList.add("hidden");
+    $("sheetRow").classList.add("hidden");
+    $("generationStatus").textContent = "";
+    showNotice("Choose a file to begin.");
+  });
+})();
+</script>
+</body>
+</html>
