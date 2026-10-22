@@ -524,7 +524,7 @@
         ? completeSql.slice(0, PREVIEW_CHARS) + "\n\n-- Preview truncated. Download the .sql file for the complete output."
         : completeSql;
       $("sqlOutput").value = preview;
-      $("outputSummary").textContent = `${processRows.length.toLocaleString()} rows processed · ${chunks.length.toLocaleString()} row blocks · ${completeSql.length.toLocaleString()} characters generated`;
+      $("outputSummary").textContent = `${processRows.length.toLocaleString()} rows processed · ${((type === "both" || type === "select") ? selectStatements.length : 0).toLocaleString()} SELECT statements · ${((type === "both" || type === "update") ? updateStatements.length : 0).toLocaleString()} UPDATE statements · ${completeSql.length.toLocaleString()} characters generated`;
       const warning = $("outputWarning");
       if (rows.length > maxRows) {
         warning.textContent = `Only the first ${maxRows.toLocaleString()} of ${rows.length.toLocaleString()} data rows were processed because of your configured row limit. Increase the limit and regenerate if appropriate.`;
