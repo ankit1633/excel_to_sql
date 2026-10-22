@@ -57,7 +57,8 @@
 
   <section class="card">
     <h2>1. Upload spreadsheet</h2>
-    <p class="muted small">Supported: .xlsx, .xls, .csv. The first row of the selected sheet must contain unique column headers.</p>
+    <p class="muted small">Supported: .xlsx, .xls, .csv. Header detection is automatic. Large files are processed in the browser in batches; no spreadsheet data is uploaded to a backend.</p>
+    <p class="muted small">Note: XLSX files must still be parsed in browser memory. For very large datasets, CSV generally uses less memory than XLSX. Performance depends on your device and file size.</p>
     <div class="field">
       <label for="fileInput">Excel or CSV file</label>
       <input id="fileInput" type="file" accept=".xlsx,.xls,.xlsm,.xlsb,.csv">
@@ -101,8 +102,8 @@
       </div>
       <div class="field">
         <label for="maxRows">Maximum spreadsheet rows to process</label>
-        <input id="maxRows" type="number" min="1" max="1000000" value="10000">
-        <span class="muted small">Safety limit for generated output; increase only if your browser can handle it.</span>
+        <input id="maxRows" type="number" min="1" max="1000000" value="100000">
+        <span class="muted small">Set to 100,000 or more for large files; available memory and spreadsheet complexity still matter.</span>
       </div>
     </div>
 
@@ -143,9 +144,9 @@
     <textarea id="sqlOutput" spellcheck="false" readonly placeholder="Generated SQL will appear here."></textarea>
     <div class="actions">
       <button id="copyBtn" type="button">Copy SQL</button>
-      <button id="downloadBtn" type="button" class="secondary">Download .sql</button>
+      <button id="downloadBtn" type="button" class="secondary">Download .txt</button>
     </div>
-    <p class="muted small">For large outputs, the preview is capped to keep the page responsive. Download SQL to get the complete output.</p>
+    <p class="muted small">For large outputs, the preview is capped to keep the page responsive. Download the .txt file to get the complete output.</p>
   </section>
   <footer>Privacy note: spreadsheet contents are parsed in this browser tab and are not sent to a database or application server. SheetJS is loaded from its official CDN, so an internet connection is needed unless you download and host that library locally.</footer>
 </main>
@@ -160,7 +161,11 @@
   let workbook = null;
   let headers = [];
   let rows = [];
-  let completeSql = "";
+  // Keep generated output as manageable text chunks instead of one giant string.
+  let completeSqlParts = [];
+  let completeSqlLength = 0;
+  let previewSql = "";
+  let generationRunId = 0;
   let currentFileName = "spreadsheet";
   let detectedHeaderRowIndex = 0;
 
@@ -352,7 +357,11 @@
     workbook = null;
     headers = [];
     rows = [];
-    completeSql = "";
+    completeSqlParts = [];
+    completeSqlLength = 0;
+    previewSql = "";
+    generationRunId++;
+    $("generateBtn").disabled = false;
     $("configSection").classList.add("hidden");
     $("outputSection").classList.add("hidden");
     $("previewSection").classList.add("hidden");
@@ -366,9 +375,9 @@
     }
 
     // Browser memory is required to parse XLSX; this size check is a conservative guard, not a guarantee.
-    const maxFileBytes = 150 * 1024 * 1024;
+    const maxFileBytes = 250 * 1024 * 1024;
     if (file.size > maxFileBytes) {
-      showNotice("This file is larger than the 150 MB browser-MVP limit. Use a smaller file or a streaming backend.", "error");
+      showNotice("This file is larger than the 250 MB browser limit. Use a smaller file or a streaming backend.", "error");
       event.target.value = "";
       return;
     }
@@ -472,7 +481,13 @@
     return table;
   }
 
-  $("generateBtn").addEventListener("click", () => {
+  $("generateBtn").addEventListener("click", async () => {
+    const runId = ++generationRunId;
+    const button = $("generateBtn");
+    button.disabled = true;
+    $("generationStatus").textContent = "Preparing…";
+    $("outputSection").classList.add("hidden");
+
     try {
       if (!rows.length) throw new Error("Upload a worksheet with at least one non-empty data row.");
       const table = validateTableName($("tableName").value);
@@ -491,46 +506,82 @@
       if (type !== "select" && !selectedWhere.length) throw new Error("Select at least one WHERE column. UPDATE without WHERE is blocked.");
       if (type === "select" && !selectedWhere.length) throw new Error("Select at least one WHERE column.");
 
-      const processRows = rows.slice(0, maxRows);
-      // Group statement types so every SELECT appears before any UPDATE.
-      const selectStatements = [];
-      const updateStatements = [];
-
-      processRows.forEach((row, index) => {
-        const excelRowNumber = index + detectedHeaderRowIndex + 2;
-        if (type === "both" || type === "select") {
-          selectStatements.push(
-            `-- Spreadsheet data row ${excelRowNumber}\n` +
-            makeSelect(row, table, selectedSelect, selectedWhere, dialect)
-          );
+      const processCount = Math.min(rows.length, maxRows);
+      const parts = [];
+      const previewLimit = PREVIEW_CHARS;
+      let preview = "";
+      let totalChars = 0;
+      let selectCount = 0;
+      let updateCount = 0;
+      const batchSize = 250;
+      const separator = "\n\n";
+      const addOutput = (text) => {
+        parts.push(text);
+        totalChars += text.length;
+        if (preview.length < previewLimit) {
+          preview += text.slice(0, previewLimit - preview.length);
         }
-        if (type === "both" || type === "update") {
-          updateStatements.push(
-            `-- Spreadsheet data row ${excelRowNumber}\n` +
-            makeUpdate(row, table, selectedUpdate, selectedWhere, dialect)
-          );
-        }
-      });
+      };
+      const yieldToBrowser = () => new Promise(resolve => setTimeout(resolve, 0));
 
-      const sections = [];
-      if (selectStatements.length) {
-        sections.push("-- ==================== SELECT STATEMENTS ====================\n" + selectStatements.join("\n\n"));
+      // Keep all SELECT statements before all UPDATE statements, without joining
+      // the entire output into a second, very large string.
+      if (type === "both" || type === "select") {
+        addOutput("-- ==================== SELECT STATEMENTS ====================\n\n");
+        for (let start = 0; start < processCount; start += batchSize) {
+          if (runId !== generationRunId) return;
+          const end = Math.min(start + batchSize, processCount);
+          const batch = [];
+          for (let index = start; index < end; index++) {
+            const row = rows[index];
+            const excelRowNumber = index + detectedHeaderRowIndex + 2;
+            batch.push(
+              `-- Spreadsheet data row ${excelRowNumber}\n` +
+              makeSelect(row, table, selectedSelect, selectedWhere, dialect)
+            );
+          }
+          selectCount += batch.length;
+          addOutput(batch.join(separator) + (end < processCount ? separator : "\n\n"));
+          $("generationStatus").textContent = `Generating SELECT statements: ${end.toLocaleString()} / ${processCount.toLocaleString()} rows`;
+          await yieldToBrowser();
+        }
       }
-      if (updateStatements.length) {
-        sections.push("-- ==================== UPDATE STATEMENTS ====================\n" + updateStatements.join("\n\n"));
+
+      if (type === "both" || type === "update") {
+        addOutput("-- ==================== UPDATE STATEMENTS ====================\n\n");
+        for (let start = 0; start < processCount; start += batchSize) {
+          if (runId !== generationRunId) return;
+          const end = Math.min(start + batchSize, processCount);
+          const batch = [];
+          for (let index = start; index < end; index++) {
+            const row = rows[index];
+            const excelRowNumber = index + detectedHeaderRowIndex + 2;
+            batch.push(
+              `-- Spreadsheet data row ${excelRowNumber}\n` +
+              makeUpdate(row, table, selectedUpdate, selectedWhere, dialect)
+            );
+          }
+          updateCount += batch.length;
+          addOutput(batch.join(separator) + (end < processCount ? separator : "\n\n"));
+          $("generationStatus").textContent = `Generating UPDATE statements: ${end.toLocaleString()} / ${processCount.toLocaleString()} rows`;
+          await yieldToBrowser();
+        }
       }
-      completeSql = sections.join("\n\n\n");
-      const preview = completeSql.length > PREVIEW_CHARS
-        ? completeSql.slice(0, PREVIEW_CHARS) + "\n\n-- Preview truncated. Download the .sql file for the complete output."
-        : completeSql;
-      $("sqlOutput").value = preview;
-      $("outputSummary").textContent = `${processRows.length.toLocaleString()} rows processed · ${((type === "both" || type === "select") ? selectStatements.length : 0).toLocaleString()} SELECT statements · ${((type === "both" || type === "update") ? updateStatements.length : 0).toLocaleString()} UPDATE statements · ${completeSql.length.toLocaleString()} characters generated`;
+
+      if (runId !== generationRunId) return;
+      completeSqlParts = parts;
+      completeSqlLength = totalChars;
+      previewSql = preview;
+      $("sqlOutput").value = preview +
+        (totalChars > previewLimit ? "\n\n-- Preview truncated. Download the .txt file for the complete output." : "");
+      $("outputSummary").textContent =
+        `${processCount.toLocaleString()} rows processed · ${selectCount.toLocaleString()} SELECT statements · ${updateCount.toLocaleString()} UPDATE statements · ${totalChars.toLocaleString()} characters generated`;
       const warning = $("outputWarning");
       if (rows.length > maxRows) {
         warning.textContent = `Only the first ${maxRows.toLocaleString()} of ${rows.length.toLocaleString()} data rows were processed because of your configured row limit. Increase the limit and regenerate if appropriate.`;
         warning.classList.remove("hidden");
-      } else if (completeSql.length > PREVIEW_CHARS) {
-        warning.textContent = "The on-screen preview is truncated to keep the page responsive. The download contains the complete SQL.";
+      } else if (totalChars > previewLimit) {
+        warning.textContent = "The on-screen preview is truncated to keep the page responsive. Download the .txt file for the complete SQL.";
         warning.classList.remove("hidden");
       } else {
         warning.classList.add("hidden");
@@ -539,42 +590,56 @@
       $("generationStatus").textContent = "SQL generated. Review it before use.";
       $("outputSection").scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (error) {
-      $("generationStatus").textContent = error.message || "Could not generate SQL.";
-      $("outputSection").classList.add("hidden");
+      if (runId === generationRunId) {
+        $("generationStatus").textContent = error.message || "Could not generate SQL.";
+        $("outputSection").classList.add("hidden");
+      }
+    } finally {
+      if (runId === generationRunId) button.disabled = false;
     }
   });
 
   $("copyBtn").addEventListener("click", async () => {
-    if (!completeSql) return;
+    if (!completeSqlParts.length) return;
+    // Copying very large SQL strings creates another large in-memory copy.
+    if (completeSqlLength > 2 * 1024 * 1024) {
+      $("generationStatus").textContent = "Output is large. Use Download .txt to avoid copying a huge string into memory.";
+      return;
+    }
     try {
-      await navigator.clipboard.writeText(completeSql);
+      await navigator.clipboard.writeText(completeSqlParts.join(""));
       $("copyBtn").textContent = "Copied!";
       setTimeout(() => $("copyBtn").textContent = "Copy SQL", 1600);
     } catch (_) {
       $("sqlOutput").focus();
       $("sqlOutput").select();
-      $("generationStatus").textContent = "Clipboard access was blocked. Select and copy the preview, or download the full SQL file.";
+      $("generationStatus").textContent = "Clipboard access was blocked. Select and copy the preview, or download the full .txt file.";
     }
   });
 
   $("downloadBtn").addEventListener("click", () => {
-    if (!completeSql) return;
-    const blob = new Blob([completeSql], { type: "text/sql;charset=utf-8" });
+    if (!completeSqlParts.length) return;
+    const blob = new Blob(completeSqlParts, { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `${currentFileName}_generated.sql`;
+    anchor.download = `${currentFileName}_generated.txt`;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
-    URL.revokeObjectURL(url);
+    // Delay revocation to give the browser time to begin the download.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
 
   $("clearBtn").addEventListener("click", () => {
     workbook = null;
     headers = [];
     rows = [];
-    completeSql = "";
+    completeSqlParts = [];
+    completeSqlLength = 0;
+    previewSql = "";
+    generationRunId++;
+    $("generateBtn").disabled = false;
     state.select.clear();
     state.where.clear();
     state.update.clear();
